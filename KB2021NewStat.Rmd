@@ -1,0 +1,275 @@
+---
+title: "KBO2021NewStat"
+author: "Seung Hun Han"
+date: '2021 12 1 '
+output: 
+  pdf_document:
+      latex_engine: xelatex
+---
+
+# Creating New Statistics for evaluating Hitter's Performance using Multivariate Statistical Methods
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,warning=F)
+```
+
+```{r,message=F}
+
+library(tidyverse)
+library(rvest)
+library(rJava)
+library(XML)
+library(dplyr)
+library(plyr)
+
+library(ggplot2)
+library(httr)
+library(RSelenium)
+library(wdman)
+library(binman) #list_versions() 함수사용
+library(stringr)
+library(seleniumPipes)
+library(wordcloud2)
+library(wordcloud)
+library(RColorBrewer)
+library(knitr)
+```
+
+
+
+```{r}
+Batraw<-read.csv("2021bat.csv")
+which(is.na(Batraw))
+names(Batraw)
+```
+
+
+
+```{r}
+Batraw<-Batraw%>%filter(AB>=100)
+Batraw<-as_tibble(Batraw)
+
+names(Batraw)
+```
+
+```{r}
+Hittingraw<-Batraw[,c(1,4:32)]
+Defenseraw<-Batraw[,33:35]
+Runnerraw<-Batraw[,37:44]
+```
+
+* Column 4~32 Batting
+* Column 33~35 Def
+* Column 37~44 Runner
+
+```{r}
+Runnerraw[,"CS"]<--Runnerraw[,"CS"]
+Hittingraw[,c("SO","DP")]<--Hittingraw[,c("SO","DP")]
+```
+
+* Take negative to column 40 and 41
+
+```{r}
+
+Hittingraw<-Hittingraw%>%mutate(SOPer=-SO/AB,DPPer=-DP/AB)
+
+Standardhit<-scale(Hittingraw[,-1],center=T)
+```
+
+* Large number of SO and DP are assumed to have negative effect on player's value.\
+* However, SO and DP are accumulated statistics, so considering ratio value would compensate for the disadvantages for the sluggers.\
+* Though one might assert that only the ratio statistics such as AVG, SLG, OPS should be considered for the analysis,I have decided not to remove accumulative statistics such as Hits, RBIs and HRs.
+* Being able to be in the starting lineup throughout whole season is also a valuable aspect. Therefore, accumulative statistics should be as highly valued as the ratio statistics.\
+* The reason mentioned above is the reason why I have decided to include G (Number of games played).\
+* Because variables included in the datasets do not have same unit, it would be wise to standardize each values relative to the mean value of an entire players.\
+* Because of the standardization, Newly derived statistics from an analysis which will be conducted later, would be a "relative" scales. To be precise, the statistics will show how much better or worse a player played in 2021 season. Therefore, work done here can not be replicated for other seasons.
+
+```{r}
+Batcor<-cor(Standardhit)
+kable(Batcor)
+```
+
+```{r}
+summary(princomp(covmat=Batcor,cor=T))
+screeplot(princomp(covmat=Batcor,cor=T),npcs=31,type='l')
+```
+
+* Variance explained by PC1,2 is 66.2%.
+* Scree plot also has a distinctive breaking point at PC=2. 
+* Therefore, conserve up to PC2.
+
+```{r}
+
+PCBat<-princomp(covmat=Batcor,cor=T)
+
+PCBatload<-PCBat$loadings[,1:2]
+
+PCBat1weight<-PCBat$sdev[1]^2/length(PCBat$sdev)
+PCBat2weight<-PCBat$sdev[2]^2/length(PCBat$sdev)
+
+PCBat1<-data.frame(PCB1=apply(Standardhit%*%PCBatload[,1],1,sum))
+PCBat2<-PCBat2weight/PCBat1weight*data.frame(PCB2=apply(Standardhit%*%PCBatload[,2],1,sum))
+
+```
+
+* Retain PC scores through multiplication of standardized Batting data and each PC loadings.
+* Use relative proportion of variance explained by each PC as a weight (Put PC2 proportion as default).\
+
+```{r}
+
+StandardDef<-scale(Defenseraw,center=T)
+Defensecor<-cor(StandardDef)
+summary(princomp(covmat=Defensecor,cor=T))
+screeplot(princomp(covmat=Defensecor,cor=T),npcs=3,type='l')
+PCDef<-princomp(covmat=Defensecor,cor=T)
+PCDefload<-PCDef$loadings[,1]
+PCDef1<-data.frame(PCD1=apply(StandardDef%*%PCDefload,1,sum))
+
+
+Runnerraw[which(is.na(Runnerraw)),1]<-0
+
+StandardRun<-scale(Runnerraw,center=T)
+Runningcor<-cor(StandardRun)
+summary(princomp(covmat=Runningcor,cor=T))
+
+screeplot(princomp(covmat=Runningcor,cor=T),npcs=10,type='l')
+PCRun<-princomp(covmat=Runningcor,cor=T)
+
+PCRunload<-PCRun$loadings[,1:3]
+
+PCRun1weight<-PCRun$sdev[1]^2/length(PCRun$sdev)
+PCRun2weight<-PCRun$sdev[2]^2/length(PCRun$sdev)
+PCRun3weight<-PCRun$sdev[3]^2/length(PCRun$sdev)
+
+
+PCRun1<-data.frame(PCR1=apply(StandardRun%*%PCRunload[,1],1,sum))
+PCRun2<-PCRun2weight/PCRun1weight*data.frame(PCR2=apply(StandardRun%*%PCRunload[,2],1,sum))
+PCRun3<-PCRun3weight/PCRun1weight*data.frame(PCR3=apply(StandardRun%*%PCRunload[,3],1,sum))
+
+
+PCcombined<-data.frame(bind_cols(Batraw[,c("Name","Team")],PCBat1,PCBat2,PCDef1,PCRun1,PCRun2,PCRun3))
+PCcombined<-PCcombined%>%mutate(Total=apply(PCcombined[,3:7],1,sum))
+```
+
+* Repeat same process for Running and Defense dataset.\
+
+```{r}
+library(psych)
+library(GPArotation)
+combinedcor<-cor(PCcombined[,3:8])
+
+summary(princomp(covmat=combinedcor,cor=T))
+screeplot(princomp(covmat=combinedcor,cor=T),npcs=6,type='l')
+
+fa(combinedcor, nfactors=3, fm="ml", rotate="oblimin",scores="regression")
+
+```
+
+* Combine PC scores from batting, running and defense score into one matrix.\
+* Conduct MLE based factor analysis using the combined data.
+
+```{r}
+pcweights<-matrix(c(1.06,0.99*0.85,1*1.01,0.99*0.51,0,0),nrow=6,ncol=1)
+
+PCcombined<-PCcombined%>%mutate(Total=as.matrix(PCcombined[,3:8])%*%pcweights)
+PCcombined<-PCcombined%>%mutate(Unweightedtotal=apply(PCcombined[,3:8],1,sum))
+
+```
+
+
+* Divide each variables into different factors.\
+* PCs with communaltities lower than 0.3 have been removed.\
+* Use the factor loadings and portion of variance as weights.\
+* Perform linear combination using the calculated weights and PC scores and get the weighted sum, which will be named as PAINS (Perfomance Analysis INduced Statistics)
+
+Aggregated Evaluation Statistics\
+* Calculate unweighted sum of each PCs (Only include PCs that are also included in factor analysis).\
+
+```{r}
+PCcombined$WAR<-Batraw[,"WAR"]
+
+PCcombined<-PCcombined%>%dplyr::rename(PAINS=Total)
+
+PCmatrix<-as.matrix(PCcombined[,c(11,9)])
+
+rownames(PCmatrix)<-PCcombined$Name
+
+K2<-kmeans(PCmatrix,centers=5,nstart=25)
+
+library(factoextra)
+```
+
+
+* Use WAR as X-axis and PAINS as the y-axis to perform K-mean Clustering.\
+* Create 5 groups.\
+* Set nstart as 25 (Repeat the procedure using different starting group 25 times).\
+
+```{r}
+fviz_cluster(K2,data=PCmatrix)+geom_abline()
+
+Batraw%>%filter(Name%in%c("홍창기","강백호","김재환","페르난데스"))%>%select(Name,RAAdef,RAADefPos,RAAdeftotal,RAA.Adj)
+```
+
+* Players with poor defensive or running skills are less valued than WAR.\
+
+```{r}
+K2list<-as.matrix(K2$cluster)
+
+K2lists<-as.data.frame(K2list)
+
+K2lists<-K2lists%>%mutate(Name=rownames(K2list))
+
+K2lists<-K2lists[,c(2,1)]
+
+PCcombined1231<-merge(PCcombined,K2lists,by="Name")
+```
+
+* Create new table including the allocated cluster for each players.\
+
+
+```{r}
+PCcombined1231$V1<-as.factor(PCcombined1231$V1)
+
+PCcombined1231%>%group_by(V1)%>%dplyr::summarise(Average_WAR=sum(WAR)/n())
+
+PCcombined1231<-PCcombined1231%>%dplyr::rename(Cluster=V1)
+
+Top<-PCcombined1231%>%filter(Cluster==3)%>%select(Name,WAR,PAINS,Cluster)
+Second<-PCcombined1231%>%filter(Cluster==5)%>%select(Name,WAR,PAINS,Cluster)%>%arrange(desc(PAINS))
+Third<-PCcombined1231%>%filter(Cluster==4)%>%select(Name,WAR,PAINS,Cluster)%>%arrange(desc(PAINS))
+Fourth<-PCcombined1231%>%filter(Cluster==2)%>%select(Name,WAR,PAINS,Cluster)%>%arrange(desc(PAINS))
+Last<-PCcombined1231%>%filter(Cluster==1)%>%select(Name,WAR,PAINS,Cluster)%>%arrange(desc(PAINS))
+
+list<-PCcombined%>%select(Name,WAR,PAINS)
+
+
+PCcombined1231%>%filter()
+
+qqnorm
+head(Last)
+Top<-Top[-which(Top$Name=="이원석"),]
+Clustering<-bind_rows(head((Top)),head(Second),head(Third),head(Fourth),)
+
+```
+
+* Divide players into each clusters.\
+```{r}
+PCcombined1231<-PCcombined1231%>%mutate(Team=substr(PCcombined1231$Team,3,3),Position=substr(PCcombined1231$Team,4,5))
+
+OF<-PCcombined1231%>%filter(Position%in%c("LF","CF","RF"))%>%select(Name,Position,WAR,PCD1,PAINS,Cluster)
+
+##PCcombined1231%>%group_by(Position)%>%dplyr::summarise(PAINSMedian=median(Total),WARMedian=median(WAR))
+
+```
+
+* The second column originally contained year played, team, and position played.\
+* Divide those attached information into three pieces using substr
+* Calculate median of PAINS and WAR for each position.\
+
+```{r}
+##PCcombined1231[which(PCcombined1231$Position%in%c("1B","C","2B","3B","CF","DH","SS","LF","RF")==F),"Name"]
+```
+
+* Some players who have moved team during the season had different format. (Contains two letters for team information )\
+* For those players, edit the dataset appropriately.\
+
